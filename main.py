@@ -42,6 +42,7 @@ from schemas import (
     UsuarioLogin,
     UsuarioProfileUpdate,
     UsuarioResponse,
+    UsuarioUpdate,
     VendedorVisitaResponse,
     VisitaDesistenciaRequest,
 )
@@ -246,6 +247,60 @@ def _pode_criar_tipo(usuario_logado: dict, tipo_novo_usuario: str) -> bool:
     if tipo_atual == ROLE_ADMIN and tipo_novo_usuario == ROLE_BUYER:
         return True
     return False
+
+
+def _pode_gerenciar_usuario(usuario_logado: dict, usuario_alvo: dict) -> bool:
+    if usuario_logado.get("tipo") == ROLE_DEVELOPER:
+        return True
+    return (
+        usuario_logado.get("tipo") == ROLE_ADMIN
+        and usuario_alvo.get("tipo") == ROLE_BUYER
+    )
+
+
+def _contar_desenvolvedores_ativos(usuarios: list[dict]) -> int:
+    return sum(
+        1
+        for usuario in usuarios
+        if usuario.get("tipo") == ROLE_DEVELOPER and usuario.get("ativo", True)
+    )
+
+
+def _usuario_possui_vinculos_operacionais(user_id: int) -> bool:
+    if any(item.get("comprador_id") == user_id for item in storage.list_agendamentos()):
+        return True
+    if any(item.get("comprador_id") == user_id for item in storage.list_disponibilidades()):
+        return True
+    return False
+
+
+def _validar_alteracao_desenvolvedor(
+    usuarios: list[dict],
+    usuario_alvo: dict,
+    *,
+    novo_tipo: Optional[str] = None,
+    novo_ativo: Optional[bool] = None,
+    excluindo: bool = False,
+) -> None:
+    era_desenvolvedor_ativo = (
+        usuario_alvo.get("tipo") == ROLE_DEVELOPER and usuario_alvo.get("ativo", True)
+    )
+    continuara_desenvolvedor_ativo = (
+        not excluindo
+        and (novo_tipo or usuario_alvo.get("tipo")) == ROLE_DEVELOPER
+        and (
+            usuario_alvo.get("ativo", True)
+            if novo_ativo is None
+            else novo_ativo
+        )
+    )
+
+    if era_desenvolvedor_ativo and not continuara_desenvolvedor_ativo:
+        if _contar_desenvolvedores_ativos(usuarios) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Nao e possivel remover ou desativar o ultimo desenvolvedor ativo",
+            )
 
 
 def _buscar_nome_comprador(comprador_id: int) -> str:
@@ -565,6 +620,9 @@ async def criar_usuario(
         {
             "nome": novo_usuario.nome,
             "email": email,
+            "telefone": novo_usuario.telefone,
+            "foto_url": novo_usuario.foto_url,
+            "mensagem_whatsapp": novo_usuario.mensagem_whatsapp,
             "senha": novo_usuario.senha,
             "tipo": novo_usuario.tipo,
             "ativo": novo_usuario.ativo,
@@ -580,6 +638,150 @@ async def criar_usuario(
         raise _storage_exception(exc) from exc
 
     return _serialize_usuario(usuario_dict)
+
+
+@app.patch("/usuarios/{usuario_id}", response_model=UsuarioResponse)
+async def atualizar_usuario(
+    usuario_id: int,
+    dados: UsuarioUpdate,
+    usuario_atual: dict = Depends(get_admin_ou_desenvolvedor_atual),
+) -> UsuarioResponse:
+    try:
+        usuarios = storage.list_users()
+        usuario = next((item for item in usuarios if item["id"] == usuario_id), None)
+    except StorageError as exc:
+        raise _storage_exception(exc) from exc
+
+    if not usuario:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario nao encontrado",
+        )
+
+    if usuario["id"] == usuario_atual["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Use a tela de perfil para alterar sua propria conta",
+        )
+
+    if not _pode_gerenciar_usuario(usuario_atual, usuario):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Voce nao pode editar este usuario",
+        )
+
+    novo_tipo = dados.tipo if dados.tipo is not None else usuario.get("tipo")
+    if dados.tipo is not None and not _pode_criar_tipo(usuario_atual, dados.tipo):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Este perfil nao pode definir esse tipo de usuario",
+        )
+
+    try:
+        possui_vinculos_operacionais = _usuario_possui_vinculos_operacionais(usuario_id)
+    except StorageError as exc:
+        raise _storage_exception(exc) from exc
+
+    if (
+        dados.tipo is not None
+        and dados.tipo != usuario.get("tipo")
+        and possui_vinculos_operacionais
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Nao e possivel alterar o perfil de um usuario com agendamentos ou disponibilidades vinculadas",
+        )
+
+    _validar_alteracao_desenvolvedor(
+        usuarios,
+        usuario,
+        novo_tipo=novo_tipo,
+        novo_ativo=dados.ativo,
+    )
+
+    if dados.email is not None:
+        novo_email = _normalizar_email(str(dados.email))
+        if any(
+            item["id"] != usuario["id"] and _normalizar_email(item["email"]) == novo_email
+            for item in usuarios
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ja existe um usuario com este email",
+            )
+        usuario["email"] = novo_email
+
+    if dados.nome is not None:
+        usuario["nome"] = dados.nome
+
+    if dados.tipo is not None:
+        usuario["tipo"] = dados.tipo
+
+    if dados.ativo is not None:
+        usuario["ativo"] = dados.ativo
+
+    if dados.senha is not None:
+        usuario["senha_hash"] = criar_hash_senha(dados.senha)
+        _limpar_reset_senha(usuario)
+
+    try:
+        storage.save_users(usuarios, f"Atualiza usuario #{usuario['id']}")
+    except StorageError as exc:
+        raise _storage_exception(exc) from exc
+
+    return _serialize_usuario(usuario)
+
+
+@app.delete("/usuarios/{usuario_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def excluir_usuario(
+    usuario_id: int,
+    usuario_atual: dict = Depends(get_admin_ou_desenvolvedor_atual),
+) -> Response:
+    try:
+        usuarios = storage.list_users()
+        usuario = next((item for item in usuarios if item["id"] == usuario_id), None)
+    except StorageError as exc:
+        raise _storage_exception(exc) from exc
+
+    if not usuario:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario nao encontrado",
+        )
+
+    if usuario["id"] == usuario_atual["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nao e permitido excluir a propria conta por esta tela",
+        )
+
+    if not _pode_gerenciar_usuario(usuario_atual, usuario):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Voce nao pode excluir este usuario",
+        )
+
+    _validar_alteracao_desenvolvedor(usuarios, usuario, excluindo=True)
+
+    try:
+        possui_vinculos_operacionais = _usuario_possui_vinculos_operacionais(usuario_id)
+    except StorageError as exc:
+        raise _storage_exception(exc) from exc
+
+    if possui_vinculos_operacionais:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Nao e possivel excluir um usuario com agendamentos ou disponibilidades vinculadas",
+        )
+
+    usuarios = [item for item in usuarios if item["id"] != usuario_id]
+
+    try:
+        storage.save_users(usuarios, f"Exclui usuario #{usuario_id}")
+    except StorageError as exc:
+        raise _storage_exception(exc) from exc
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/compradores", response_model=list[CompradorListResponse])

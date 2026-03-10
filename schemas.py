@@ -39,6 +39,31 @@ class UsuarioCreate(UsuarioBase):
         return value
 
 
+class UsuarioUpdate(BaseModel):
+    nome: Optional[str] = None
+    email: Optional[EmailStr] = None
+    senha: Optional[str] = None
+    tipo: Optional[str] = None
+    ativo: Optional[bool] = None
+
+    @field_validator("nome", "senha")
+    @classmethod
+    def validar_texto(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        return value or None
+
+    @field_validator("tipo")
+    @classmethod
+    def validar_tipo(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        if value not in USER_TYPES:
+            raise ValueError('Tipo deve ser "comprador", "administrador" ou "desenvolvedor"')
+        return value
+
+
 class UsuarioLogin(BaseModel):
     email: EmailStr
     senha: str
