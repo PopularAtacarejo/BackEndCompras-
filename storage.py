@@ -52,11 +52,11 @@ class JsonStorage:
         )
 
     def list_users(self) -> list[dict[str, Any]]:
-        payload = self._read_payload(
+        payload = self._normalize_auth_payload(self._read_payload(
             self.auth_local_path,
             self.auth_remote_path,
             {"usuarios": []},
-        )
+        ))
         usuarios = payload.get("usuarios", [])
         return usuarios if isinstance(usuarios, list) else []
 
@@ -140,13 +140,11 @@ class JsonStorage:
         return max(disponibilidade.get("id", 0) for disponibilidade in disponibilidades) + 1
 
     def _read_agendamentos_payload(self) -> dict[str, Any]:
-        payload = self._read_payload(
+        payload = self._normalize_agendamentos_payload(self._read_payload(
             self.agendamentos_local_path,
             self.agendamentos_remote_path,
             {"agendamentos": [], "disponibilidades": []},
-        )
-        payload.setdefault("agendamentos", [])
-        payload.setdefault("disponibilidades", [])
+        ))
         return payload
 
     def _write_agendamentos_payload(
@@ -192,7 +190,7 @@ class JsonStorage:
         local_path: Path,
         remote_path: str,
         default_payload: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> Any:
         with self._lock:
             if self.github_enabled:
                 remote_payload = self._download_from_github(remote_path)
@@ -218,7 +216,39 @@ class JsonStorage:
                 self._upload_to_github(remote_path, payload, commit_message)
             self._write_local_file(local_path, payload)
 
-    def _download_from_github(self, remote_path: str) -> Optional[dict[str, Any]]:
+    def _normalize_auth_payload(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            usuarios = payload.get("usuarios", [])
+            return {
+                "usuarios": usuarios if isinstance(usuarios, list) else [],
+            }
+
+        if isinstance(payload, list):
+            return {"usuarios": payload}
+
+        return {"usuarios": []}
+
+    def _normalize_agendamentos_payload(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            agendamentos = payload.get("agendamentos", [])
+            disponibilidades = payload.get("disponibilidades", [])
+            return {
+                "agendamentos": agendamentos if isinstance(agendamentos, list) else [],
+                "disponibilidades": disponibilidades if isinstance(disponibilidades, list) else [],
+            }
+
+        if isinstance(payload, list):
+            return {
+                "agendamentos": payload,
+                "disponibilidades": [],
+            }
+
+        return {
+            "agendamentos": [],
+            "disponibilidades": [],
+        }
+
+    def _download_from_github(self, remote_path: str) -> Optional[Any]:
         try:
             response = self._github_request("GET", self._read_contents_url(remote_path))
         except error.HTTPError as exc:
