@@ -49,12 +49,6 @@ from schemas import (
 from storage import StorageError
 
 
-DEFAULT_BUYERS = [
-    {"nome": "Maria Silva", "email": "maria@empresa.com", "senha": "123456", "tipo": ROLE_BUYER},
-    {"nome": "Joao Santos", "email": "joao@empresa.com", "senha": "123456", "tipo": ROLE_BUYER},
-    {"nome": "Ana Oliveira", "email": "ana@empresa.com", "senha": "123456", "tipo": ROLE_BUYER},
-]
-
 DEFAULT_DEVELOPER = {
     "nome": "Jeferson",
     "email": "djaxelf22@gmail.com",
@@ -80,7 +74,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    """Inicializa os arquivos de dados e cria usuarios iniciais."""
+    """Inicializa os arquivos de dados e garante o usuario desenvolvedor inicial."""
     try:
         storage.initialize_files()
         _garantir_usuarios_iniciais()
@@ -212,7 +206,7 @@ def _gerar_codigo_reset() -> str:
 
 
 def _garantir_usuarios_iniciais() -> None:
-    """Garante compradores iniciais e um usuario desenvolvedor."""
+    """Garante apenas o usuario desenvolvedor inicial."""
     try:
         usuarios = storage.list_users()
         existentes_por_email = {
@@ -223,19 +217,13 @@ def _garantir_usuarios_iniciais() -> None:
         alterado = False
         next_id = _next_user_id(usuarios)
 
-        if not any(usuario.get("tipo") == ROLE_BUYER for usuario in usuarios):
-            for comprador in DEFAULT_BUYERS:
-                usuarios.append(_montar_usuario(comprador, next_id))
-                next_id += 1
-                alterado = True
-
         dev_email = _normalizar_email(DEFAULT_DEVELOPER["email"])
         if dev_email not in existentes_por_email:
             usuarios.append(_montar_usuario(DEFAULT_DEVELOPER, next_id))
             alterado = True
 
         if alterado:
-            storage.save_users(usuarios, "Atualiza usuarios iniciais")
+            storage.save_users(usuarios, "Atualiza usuario desenvolvedor inicial")
     except StorageError as exc:
         print(f"Erro ao criar dados iniciais: {exc}")
 
