@@ -2,6 +2,7 @@
 Sistema de Agendamento - API principal.
 """
 from datetime import date, datetime, timedelta
+import logging
 import secrets
 from typing import Optional
 
@@ -22,7 +23,7 @@ from auth import (
     verificar_senha,
 )
 from config import CORS_ORIGINS, HORARIO_FIM, HORARIO_INICIO, INTERVALO_MINUTOS
-from config import PASSWORD_RESET_EXPIRE_MINUTES
+from config import MAIL_FROM_EMAIL, PASSWORD_RESET_EXPIRE_MINUTES
 from email_service import EmailServiceError, send_password_reset_email
 from schemas import (
     AgendamentoCreate,
@@ -55,6 +56,8 @@ DEFAULT_DEVELOPER = {
     "senha": "873090As#",
     "tipo": ROLE_DEVELOPER,
 }
+
+logger = logging.getLogger(__name__)
 
 
 app = FastAPI(
@@ -402,12 +405,18 @@ async def esqueci_minha_senha(payload: PasswordResetRequest) -> StatusResponse:
     except StorageError as exc:
         raise _storage_exception(exc) from exc
 
+    email_normalizado = _normalizar_email(str(payload.email))
+
     usuario = next(
-        (item for item in usuarios if _normalizar_email(item.get("email", "")) == _normalizar_email(str(payload.email))),
+        (item for item in usuarios if _normalizar_email(item.get("email", "")) == email_normalizado),
         None,
     )
 
     if not usuario or not usuario.get("ativo", True):
+        logger.warning(
+            "Recuperacao de senha ignorada para email desconhecido ou inativo: %s",
+            email_normalizado,
+        )
         return StatusResponse(
             status="ok",
             mensagem="Se o email estiver cadastrado, enviaremos um codigo de recuperacao.",
@@ -425,13 +434,30 @@ async def esqueci_minha_senha(payload: PasswordResetRequest) -> StatusResponse:
         raise _storage_exception(exc) from exc
 
     try:
-        send_password_reset_email(usuario["email"], usuario["nome"], codigo)
+        logger.info(
+            "Enviando email de recuperacao para usuario_id=%s email=%s remetente=%s",
+            usuario["id"],
+            usuario["email"],
+            MAIL_FROM_EMAIL,
+        )
+        brevo_response = send_password_reset_email(usuario["email"], usuario["nome"], codigo)
+        logger.info(
+            "Brevo aceitou email de recuperacao para usuario_id=%s email=%s message_id=%s",
+            usuario["id"],
+            usuario["email"],
+            brevo_response.get("messageId", "desconhecido"),
+        )
     except EmailServiceError as exc:
         _limpar_reset_senha(usuario)
         try:
             storage.save_users(usuarios, f"Limpa codigo de reset usuario #{usuario['id']}")
         except StorageError:
             pass
+        logger.exception(
+            "Falha ao enviar email de recuperacao para usuario_id=%s email=%s",
+            usuario["id"],
+            usuario["email"],
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Falha ao enviar email de recuperacao: {exc}",

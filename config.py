@@ -59,6 +59,15 @@ SMTP_LOGIN = os.getenv("SMTP_LOGIN", "")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_API_BASE_URL = os.getenv("BREVO_API_BASE_URL", "https://api.brevo.com/v3").rstrip("/")
 BREVO_SANDBOX_MODE = os.getenv("BREVO_SANDBOX_MODE", "0") == "1"
-MAIL_FROM_EMAIL = os.getenv("MAIL_FROM_EMAIL", SMTP_LOGIN)
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
+_mail_from_email = os.getenv("MAIL_FROM_EMAIL", "").strip()
+
+if _mail_from_email.lower().endswith("@smtp-brevo.com"):
+    _mail_from_email = ""
+
+if SMTP_FROM_EMAIL.lower().endswith("@smtp-brevo.com"):
+    SMTP_FROM_EMAIL = ""
+
+MAIL_FROM_EMAIL = _mail_from_email or SMTP_FROM_EMAIL
 MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "Popular Atacarejo")
 PASSWORD_RESET_EXPIRE_MINUTES = int(os.getenv("PASSWORD_RESET_EXPIRE_MINUTES", "15"))

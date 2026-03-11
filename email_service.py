@@ -4,6 +4,7 @@ Servico de envio de emails transacionais via Brevo.
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib import error, request
 
 from config import (
@@ -20,7 +21,22 @@ class EmailServiceError(RuntimeError):
     """Erro no envio de email."""
 
 
-def _post_brevo(payload: dict) -> None:
+def _get_sender_email() -> str:
+    sender_email = MAIL_FROM_EMAIL.strip()
+    if not sender_email:
+        raise EmailServiceError(
+            "MAIL_FROM_EMAIL ou SMTP_FROM_EMAIL nao configurado com um remetente valido na Brevo"
+        )
+
+    if sender_email.lower().endswith("@smtp-brevo.com"):
+        raise EmailServiceError(
+            "MAIL_FROM_EMAIL invalido: use um remetente validado na Brevo, nao o login SMTP"
+        )
+
+    return sender_email
+
+
+def _post_brevo(payload: dict[str, Any]) -> dict[str, Any]:
     if not BREVO_API_KEY:
         raise EmailServiceError("BREVO_API_KEY nao configurada")
 
@@ -40,7 +56,10 @@ def _post_brevo(payload: dict) -> None:
 
     try:
         with request.urlopen(req, timeout=20) as response:
-            response.read()
+            raw_response = response.read()
+            if not raw_response:
+                return {}
+            return json.loads(raw_response.decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise EmailServiceError(
@@ -50,7 +69,12 @@ def _post_brevo(payload: dict) -> None:
         raise EmailServiceError("Falha de rede ao enviar email pela Brevo") from exc
 
 
-def send_password_reset_email(destinatario_email: str, destinatario_nome: str, codigo: str) -> None:
+def send_password_reset_email(
+    destinatario_email: str,
+    destinatario_nome: str,
+    codigo: str,
+) -> dict[str, Any]:
+    sender_email = _get_sender_email()
     html = f"""
     <html>
         <body style="font-family: Arial, sans-serif; background:#f6f8f6; padding:24px; color:#1a281d;">
@@ -77,7 +101,7 @@ def send_password_reset_email(destinatario_email: str, destinatario_nome: str, c
 
     payload = {
         "sender": {
-            "email": MAIL_FROM_EMAIL,
+            "email": sender_email,
             "name": MAIL_FROM_NAME,
         },
         "to": [{"email": destinatario_email, "name": destinatario_nome}],
@@ -85,4 +109,4 @@ def send_password_reset_email(destinatario_email: str, destinatario_nome: str, c
         "htmlContent": html,
     }
 
-    _post_brevo(payload)
+    return _post_brevo(payload)
